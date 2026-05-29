@@ -444,3 +444,168 @@ describe('analyzer: warmup cost', () => {
     expect(result.warmupCost.turnCount).toBe(1);
   });
 });
+
+describe('analyzer: segment-union ≤ wall-clock invariant', () => {
+  // Local copy of the analyzer's wall-clock union (it isn't exported). Time
+  // accounting must aggregate possibly-overlapping spans by UNION, not SUM —
+  // overlapping spans can never cover more wall-clock than exists. This guards
+  // against a regression that double-counts parallel tool/subagent spans.
+  function unionMs(spans: Array<[number, number]>): number {
+    if (spans.length === 0) return 0;
+    const sorted = [...spans].sort((a, b) => a[0] - b[0]);
+    let total = 0;
+    let [curStart, curEnd] = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      const [s, e] = sorted[i];
+      if (s <= curEnd) {
+        if (e > curEnd) curEnd = e;
+      } else {
+        total += curEnd - curStart;
+        curStart = s;
+        curEnd = e;
+      }
+    }
+    return total + (curEnd - curStart);
+  }
+
+  // seconds within one minute → ISO timestamp (matches the literal style above)
+  const T = (s: number) => `2026-01-01T00:00:${String(s).padStart(2, '0')}Z`;
+
+  it('holds with overlapping parallel-tool spans (union ≤ span < naive sum)', () => {
+    // Two tool_use in ONE assistant message → both start at the assistant ts, so
+    // their toolExec segments overlap. A naive sum overcounts; the union must not.
+    const result = analyzeSession('s1', [
+      userMsg(T(0)),
+      assistantMsg(T(2), { toolUses: [{ id: 'tu1', name: 'Bash' }, { id: 'tu2', name: 'Bash' }] }),
+      toolResultMsg(T(32), ['tu1']), // toolExec [2,32] = 30s
+      toolResultMsg(T(42), ['tu2']), // toolExec [2,42] = 40s, overlaps tu1
+      assistantMsg(T(50)),           // claudeThink [42,50] = 8s
+    ]);
+
+    const segs = result.enhancedSegments;
+    expect(segs.length).toBeGreaterThan(0);
+
+    const minStart = Math.min(...segs.map(s => s.startTime));
+    const maxEnd = Math.max(...segs.map(s => s.endTime));
+    const span = maxEnd - minStart;
+    const union = unionMs(segs.map(s => [s.startTime, s.endTime] as [number, number]));
+    const naiveSum = segs.reduce((acc, s) => acc + s.durationMs, 0);
+
+    // The invariant: union of all phase segments never exceeds the wall-clock span.
+    expect(union).toBeLessThanOrEqual(span);
+    // The parallel tools genuinely overlap, so the naive sum DOES exceed the span —
+    // demonstrating why aggregation must union (the bug class this guards).
+    expect(naiveSum).toBeGreaterThan(span);
+
+    // Each segment is a valid, non-negative interval consistent with its duration.
+    for (const s of segs) {
+      expect(s.endTime).toBeGreaterThanOrEqual(s.startTime);
+      expect(s.durationMs).toBe(s.endTime - s.startTime);
+    }
+  });
+
+  it('holds for a simple sequential session (no overlap)', () => {
+    const result = analyzeSession('s2', [
+      userMsg(T(0)),
+      assistantMsg(T(5), { toolUses: [{ id: 'tu1', name: 'Read' }] }),
+      toolResultMsg(T(8), ['tu1']),
+      assistantMsg(T(10)),
+    ]);
+    const segs = result.enhancedSegments;
+    const span = Math.max(...segs.map(s => s.endTime)) - Math.min(...segs.map(s => s.startTime));
+    const union = unionMs(segs.map(s => [s.startTime, s.endTime] as [number, number]));
+    expect(union).toBeLessThanOrEqual(span);
+  });
+});
+
+describe('analyzer: parallel subagents counted by wall-clock union', () => {
+  it('does not sum overlapping (fanned-out) subagent durations', () => {
+    // 3 Agents dispatched in ONE assistant turn (parallel fan-out), all starting
+    // at 00:00:10, returning staggered at +60s / +120s / +180s.
+    // Per-agent durations sum to 360s; true wall-clock elapsed is 180s.
+    const messages: SessionMessage[] = [
+      userMsg('2026-01-01T00:00:00Z', 'go'),
+      assistantMsg('2026-01-01T00:00:10Z', {
+        toolUses: [
+          { id: 'a1', name: 'Agent' },
+          { id: 'a2', name: 'Agent' },
+          { id: 'a3', name: 'Agent' },
+        ],
+      }),
+      toolResultMsg('2026-01-01T00:01:10Z', ['a1']),
+      toolResultMsg('2026-01-01T00:02:10Z', ['a2']),
+      toolResultMsg('2026-01-01T00:03:10Z', ['a3']),
+      assistantMsg('2026-01-01T00:03:20Z'),
+    ];
+    const a = analyzeSession('s', messages);
+    expect(a.enhancedStats.subagent).toBe(180_000); // union, NOT 360_000 sum
+    expect(a.enhancedStats.toolExec).toBe(0);
+  });
+
+  it('does not sum overlapping parallel non-agent tool calls either', () => {
+    // 2 Bash calls in one turn, overlapping: spans 60s + 120s (sum 180s), union 120s.
+    const messages: SessionMessage[] = [
+      userMsg('2026-01-01T00:00:00Z', 'go'),
+      assistantMsg('2026-01-01T00:00:10Z', {
+        toolUses: [
+          { id: 'b1', name: 'Bash' },
+          { id: 'b2', name: 'Bash' },
+        ],
+      }),
+      toolResultMsg('2026-01-01T00:01:10Z', ['b1']),
+      toolResultMsg('2026-01-01T00:02:10Z', ['b2']),
+      assistantMsg('2026-01-01T00:02:20Z'),
+    ];
+    const a = analyzeSession('s', messages);
+    expect(a.enhancedStats.toolExec).toBe(120_000); // union, NOT 180_000 sum
+    expect(a.enhancedStats.subagent).toBe(0);
+  });
+
+  it('sequential subagents still add up (no spurious union collapse)', () => {
+    // Two NON-overlapping agents: 60s then 60s = 120s union == 120s sum.
+    const messages: SessionMessage[] = [
+      userMsg('2026-01-01T00:00:00Z', 'go'),
+      assistantMsg('2026-01-01T00:00:10Z', { toolUses: [{ id: 'a1', name: 'Agent' }] }),
+      toolResultMsg('2026-01-01T00:01:10Z', ['a1']),
+      assistantMsg('2026-01-01T00:01:20Z', { toolUses: [{ id: 'a2', name: 'Agent' }] }),
+      toolResultMsg('2026-01-01T00:02:20Z', ['a2']),
+      assistantMsg('2026-01-01T00:02:30Z'),
+    ];
+    const a = analyzeSession('s', messages);
+    expect(a.enhancedStats.subagent).toBe(120_000);
+  });
+});
+
+describe('analyzer: thinking gaps are capped (mid-turn suspension ≠ thinking)', () => {
+  const CAP = 10 * 60 * 1000; // THINK_CAP_MS
+
+  it('caps a long tool_result→assistant gap: 10min think + remainder humanAway', () => {
+    const result = analyzeSession('s1', [
+      userMsg('2026-01-01T00:00:00Z'),
+      assistantMsg('2026-01-01T00:00:02Z', { toolUses: [{ id: 'tu1', name: 'Bash' }] }),
+      toolResultMsg('2026-01-01T00:00:12Z', ['tu1']),
+      assistantMsg('2026-01-01T02:00:12Z'), // 2h gap after the tool result (session suspended)
+    ]);
+    // 2s legit first-response think (user→assistant) + 10min cap on the suspended gap
+    expect(result.enhancedStats.claudeThink).toBe(2000 + CAP);
+    expect(result.enhancedStats.humanAway).toBe(2 * 60 * 60 * 1000 - CAP); // 1h50m booked as away
+  });
+
+  it('caps a long user→assistant first-response gap the same way', () => {
+    const result = analyzeSession('s1', [
+      userMsg('2026-01-01T00:00:00Z'),
+      assistantMsg('2026-01-01T03:00:00Z'), // 3h before first response (suspended)
+    ]);
+    expect(result.enhancedStats.claudeThink).toBe(CAP);
+    expect(result.enhancedStats.humanAway).toBe(3 * 60 * 60 * 1000 - CAP);
+  });
+
+  it('leaves a normal short think gap untouched (no spurious humanAway)', () => {
+    const result = analyzeSession('s1', [
+      userMsg('2026-01-01T00:00:00Z'),
+      assistantMsg('2026-01-01T00:05:00Z'), // 5min < cap
+    ]);
+    expect(result.enhancedStats.claudeThink).toBe(5 * 60 * 1000);
+    expect(result.enhancedStats.humanAway).toBe(0);
+  });
+});

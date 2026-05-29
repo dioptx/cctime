@@ -6,6 +6,14 @@ import type {
 import { estimateCost } from './pricing.js';
 
 const IDLE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
+// A single uninterrupted model response effectively never exceeds this. A longer
+// gap before an assistant message means the session was SUSPENDED mid-turn
+// (overnight pause, credit stall, remote-control handoff) — not the model
+// "thinking" for hours. We cap the thinking slice at this and attribute the
+// remainder to humanAway, so long-pause sessions aren't reported as huge
+// "Claude thinking" time. (Only the assistant-end→user gap was capped before;
+// the user→assistant and tool_result→assistant gaps were not.)
+const THINK_CAP_MS = 10 * 60 * 1000; // 10 minutes
 const SUBAGENT_TOOLS = new Set(['Task', 'Agent']);
 
 export function analyzeSession(sessionId: string, messages: SessionMessage[]): SessionAnalysis {
@@ -176,6 +184,18 @@ function detectEnhancedPhases(messages: SessionMessage[]): EnhancedTimeSegment[]
     segments.push({ phase, startTime: start, endTime: end, durationMs: end - start, toolName });
   }
 
+  // Emit a "Claude thinking" (or planning) slice, capped at THINK_CAP_MS. Any
+  // excess is a mid-turn suspension, not thinking, so it's booked as humanAway.
+  function emitThink(start: number, end: number) {
+    const phase: EnhancedPhaseType = planModeActive ? 'planning' : 'claudeThink';
+    if (end - start <= THINK_CAP_MS) {
+      emit(phase, start, end);
+    } else {
+      emit(phase, start, start + THINK_CAP_MS);
+      emit('humanAway', start + THINK_CAP_MS, end);
+    }
+  }
+
   for (const msg of messages) {
     const ts = Date.parse(msg.timestamp);
     if (isNaN(ts)) continue;
@@ -225,14 +245,12 @@ function detectEnhancedPhases(messages: SessionMessage[]): EnhancedTimeSegment[]
 
       // Gap from last external user message → this assistant = Claude thinking (first response)
       if (lastExternalUserTs !== null) {
-        const phase: EnhancedPhaseType = planModeActive ? 'planning' : 'claudeThink';
-        emit(phase, lastExternalUserTs, ts);
+        emitThink(lastExternalUserTs, ts);
         lastExternalUserTs = null;
       }
       // Gap from last tool_result → this assistant = Claude thinking (mid-turn, processing results)
       else if (lastToolResultTs !== null) {
-        const phase: EnhancedPhaseType = planModeActive ? 'planning' : 'claudeThink';
-        emit(phase, lastToolResultTs, ts);
+        emitThink(lastToolResultTs, ts);
       }
 
       lastAssistantEndTs = ts;
@@ -258,11 +276,52 @@ function detectEnhancedPhases(messages: SessionMessage[]): EnhancedTimeSegment[]
   return segments;
 }
 
+/** Wall-clock union (ms) of possibly-overlapping [start, end] spans. */
+export function unionMs(spans: Array<[number, number]>): number {
+  if (spans.length === 0) return 0;
+  const sorted = [...spans].sort((a, b) => a[0] - b[0]);
+  let total = 0;
+  let [curStart, curEnd] = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    const [s, e] = sorted[i];
+    if (s <= curEnd) {
+      if (e > curEnd) curEnd = e;
+    } else {
+      total += curEnd - curStart;
+      curStart = s;
+      curEnd = e;
+    }
+  }
+  return total + (curEnd - curStart);
+}
+
 function computeEnhancedStats(segments: EnhancedTimeSegment[]): EnhancedStats {
   const stats: EnhancedStats = { humanWait: 0, humanAway: 0, claudeThink: 0, toolExec: 0, subagent: 0, planning: 0 };
+
+  // claudeThink / planning / humanWait / humanAway are emitted as sequential,
+  // non-overlapping slices, so summing them is correct. But toolExec and
+  // subagent emit one segment PER tool/agent — when calls are fanned out in
+  // parallel (e.g. 5 review subagents from a single assistant turn) those
+  // segments overlap, and summing them double-counts the concurrency. Aggregate
+  // those two by WALL-CLOCK UNION instead so the breakdown reflects real elapsed
+  // time (and the active-time percentages stay a true partition that sums to
+  // <=100%, instead of e.g. 109%).
+  const subSpans: Array<[number, number]> = [];
+  const toolSpans: Array<[number, number]> = [];
   for (const seg of segments) {
-    stats[seg.phase] += seg.durationMs;
+    if (seg.phase === 'subagent') subSpans.push([seg.startTime, seg.endTime]);
+    else if (seg.phase === 'toolExec') toolSpans.push([seg.startTime, seg.endTime]);
+    else stats[seg.phase] += seg.durationMs;
   }
+
+  // subagent = wall-clock with >=1 subagent open.
+  // toolExec  = wall-clock busy with a tool but NOT already counted as subagent
+  //             (subagent wins on the rare cross-kind overlap, e.g. Agent + Bash
+  //             dispatched in the same turn), so the two never double-count.
+  const subagentMs = unionMs(subSpans);
+  const busyMs = unionMs([...subSpans, ...toolSpans]);
+  stats.subagent = subagentMs;
+  stats.toolExec = Math.max(0, busyMs - subagentMs);
   return stats;
 }
 

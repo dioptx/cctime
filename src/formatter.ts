@@ -1,5 +1,6 @@
 import chalk from 'chalk';
-import type { SessionAnalysis, EnhancedStats, AggregateJson, StuckLoop, WarmupCost } from './types.js';
+import type { SessionAnalysis, EnhancedStats, EnhancedTimeSegment, AggregateJson, StuckLoop, WarmupCost } from './types.js';
+import { unionMs } from './analyzer.js';
 
 const BAR_WIDTH = 20;
 
@@ -212,7 +213,7 @@ export function formatSession(analysis: SessionAnalysis): string {
   lines.push(` Context: ${sparkline}`);
 
   // Insights section
-  const insightLines = formatInsights(analysis.stuckLoops, analysis.warmupCost);
+  const insightLines = formatInsights(analysis.stuckLoops, analysis.warmupCost, analysis.enhancedSegments);
   if (insightLines.length > 0) {
     lines.push('');
     lines.push(hr('Insights'));
@@ -720,8 +721,26 @@ export function formatJsonAggregate(analyses: SessionAnalysis[]): AggregateJson 
 
 // ── Insight helpers ──
 
-function formatInsights(stuckLoops: StuckLoop[], warmupCost: WarmupCost): string[] {
+function formatInsights(stuckLoops: StuckLoop[], warmupCost: WarmupCost, segments?: EnhancedTimeSegment[]): string[] {
   const lines: string[] = [];
+
+  // Parallel-subagent benefit: subagent segments are aggregated by wall-clock
+  // union (overlapping fan-out isn't double-counted), but the SUM still carries
+  // signal \u2014 sum vs union is the speedup from running agents concurrently.
+  // Shown only when \u22652 subagents actually overlapped (saved >1s), so sequential
+  // sessions get no spurious line.
+  if (segments && segments.length > 0) {
+    const sub = segments.filter(s => s.phase === 'subagent');
+    if (sub.length >= 2) {
+      const sumMs = sub.reduce((acc, s) => acc + s.durationMs, 0);
+      const wallMs = unionMs(sub.map(s => [s.startTime, s.endTime] as [number, number]));
+      const savedMs = sumMs - wallMs;
+      if (wallMs > 0 && savedMs > 1000) {
+        const factor = sumMs / wallMs;
+        lines.push(` ${chalk.magenta('\u26a1')} Parallel subagents: ${sub.length} ran in ${formatDuration(wallMs)} wall (${formatDuration(sumMs)} of work \u00b7 ${factor.toFixed(1)}\u00d7 concurrent \u00b7 saved ${formatDuration(savedMs)} vs sequential)`);
+      }
+    }
+  }
 
   // Stuck loop warnings
   if (stuckLoops && stuckLoops.length > 0) {

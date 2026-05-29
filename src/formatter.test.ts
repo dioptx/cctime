@@ -413,3 +413,34 @@ describe('formatter: insights', () => {
     expect(output).toContain('Warmup overhead');
   });
 });
+
+describe('formatSession: parallel-subagent benefit insight', () => {
+  const seg = (start: number, end: number) => ({
+    phase: 'subagent' as const, startTime: start, endTime: end, durationMs: end - start,
+  });
+
+  it('shows concurrency + time saved when subagents overlapped', () => {
+    // Two agents in one fan-out: [0,180s] and [0,120s] → sum 300s, wall(union) 180s, saved 120s.
+    const output = strip(formatSession(makeAnalysis({
+      enhancedSegments: [seg(0, 180_000), seg(0, 120_000)],
+    })));
+    expect(output).toContain('Parallel subagents');
+    expect(output).toMatch(/2 ran in 3m wall/);
+    expect(output).toMatch(/saved 2m vs sequential/);
+  });
+
+  it('shows nothing for a single subagent (no overlap to report)', () => {
+    const output = strip(formatSession(makeAnalysis({
+      enhancedSegments: [seg(0, 180_000)],
+    })));
+    expect(output).not.toContain('Parallel subagents');
+  });
+
+  it('shows nothing when subagents ran sequentially (no time saved)', () => {
+    // [0,60s] then [60s,120s] — adjacent, no overlap → sum == union, nothing saved.
+    const output = strip(formatSession(makeAnalysis({
+      enhancedSegments: [seg(0, 60_000), seg(60_000, 120_000)],
+    })));
+    expect(output).not.toContain('Parallel subagents');
+  });
+});

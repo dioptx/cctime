@@ -92,7 +92,19 @@ function filterMainSessions(entries: SessionIndexEntry[]): SessionIndexEntry[] {
   return entries.filter(e => !e.isSidechain && e.messageCount > 2);
 }
 
-export async function getLastSession(projectFilter?: string): Promise<SessionIndexEntry | null> {
+/** The session id of the Claude Code session this process is running inside,
+ *  if any. Claude Code exposes it to subprocesses as CLAUDE_CODE_SESSION_ID —
+ *  this lets `cctime` (no args) default to the ACTUAL current session instead
+ *  of "the most recently modified file", which loses to any concurrently-active
+ *  session. Returns undefined when run outside Claude Code (e.g. a plain shell). */
+export function getCurrentSessionId(): string | undefined {
+  const id = process.env.CLAUDE_CODE_SESSION_ID;
+  return id && id.trim() ? id.trim() : undefined;
+}
+
+/** All main (non-sidechain) sessions across projects, most-recently-modified
+ *  first. Shared by getLastSession and the no-arg default selection. */
+export async function getAllSessions(projectFilter?: string): Promise<SessionIndexEntry[]> {
   const dirs = await listProjectDirs();
   let allEntries: SessionIndexEntry[] = [];
 
@@ -107,9 +119,13 @@ export async function getLastSession(projectFilter?: string): Promise<SessionInd
     allEntries.push(...entries);
   }
 
-  if (allEntries.length === 0) return null;
   allEntries.sort((a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime());
-  return allEntries[0];
+  return allEntries;
+}
+
+export async function getLastSession(projectFilter?: string): Promise<SessionIndexEntry | null> {
+  const all = await getAllSessions(projectFilter);
+  return all[0] ?? null;
 }
 
 export async function getTodaySessions(projectFilter?: string): Promise<SessionIndexEntry[]> {

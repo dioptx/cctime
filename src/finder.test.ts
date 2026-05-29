@@ -29,3 +29,27 @@ describe('finder: session filtering', () => {
     expect(count).toBeLessThanOrEqual(2);
   });
 });
+
+describe('finder: current session detection', () => {
+  const KEY = 'CLAUDE_CODE_SESSION_ID';
+  let saved: string | undefined;
+  beforeEach(() => { saved = process.env[KEY]; });
+  afterEach(() => {
+    if (saved === undefined) delete process.env[KEY];
+    else process.env[KEY] = saved;
+  });
+
+  it('returns CLAUDE_CODE_SESSION_ID when running inside a Claude Code session', async () => {
+    const { getCurrentSessionId } = await import('./finder.js');
+    process.env[KEY] = 'abc123-def';
+    expect(getCurrentSessionId()).toBe('abc123-def');
+  });
+
+  it('returns undefined when the env var is unset or blank', async () => {
+    const { getCurrentSessionId } = await import('./finder.js');
+    delete process.env[KEY];
+    expect(getCurrentSessionId()).toBeUndefined();
+    process.env[KEY] = '   ';
+    expect(getCurrentSessionId()).toBeUndefined();
+  });
+});

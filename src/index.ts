@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { program } from 'commander';
-import { getLastSession, getTodaySessions, getWeekSessions, getMonthSessions, getSessionsSince, getSessionById } from './finder.js';
+import { getLastSession, getAllSessions, getCurrentSessionId, getTodaySessions, getWeekSessions, getMonthSessions, getSessionsSince, getSessionById } from './finder.js';
 import { parseSession } from './parser.js';
 import { analyzeSession } from './analyzer.js';
 import { formatSession, formatAggregate, formatCompact, formatCsv, formatMarkdown, formatJsonAggregate } from './formatter.js';
@@ -191,12 +191,35 @@ program
         entries = await getTodaySessions(opts.project);
         label = 'Today';
       } else {
-        // Default: last session
-        const entry = await getLastSession(opts.project);
+        // Default: the CURRENT session if we're running inside one, else the
+        // most recently active. Prefer CLAUDE_CODE_SESSION_ID so `cctime` (no
+        // args) reports the session you're actually in — not whichever
+        // concurrent session happened to write its file last. Resolve the
+        // current id via getSessionById (the same authoritative lookup --session
+        // uses): it matches by id and skips the messageCount>2 "main session"
+        // filter, which can otherwise drop an active session whose cached index
+        // count is stale/low.
+        const currentId = getCurrentSessionId();
+        let entry: SessionIndexEntry | null = currentId
+          ? await getSessionById(currentId, opts.project)
+          : null;
         if (!entry) {
-          console.error('No sessions found.');
-          console.error('Try running Claude Code first to create session files.');
-          process.exit(1);
+          const all = await getAllSessions(opts.project);
+          if (all.length === 0) {
+            console.error('No sessions found.');
+            console.error('Try running Claude Code first to create session files.');
+            process.exit(1);
+          }
+          entry = all[0];
+          // Heads-up when the pick is ambiguous: several sessions were written
+          // to in the last few minutes, so "most recent" may not be the one you
+          // mean. (Silent when we matched the current session — that's exact.)
+          const ACTIVE_WINDOW_MS = 5 * 60 * 1000;
+          const now = Date.now();
+          const recentlyActive = all.filter(e => now - new Date(e.modified).getTime() < ACTIVE_WINDOW_MS);
+          if (recentlyActive.length > 1) {
+            console.error(`cctime: ${recentlyActive.length} sessions were active in the last 5 min; showing the most recent (${entry.sessionId.slice(0, 8)}). Use --session <id> to pick another.`);
+          }
         }
         const analysis = await analyzeEntry(entry);
         if (opts.csv || opts.compact || opts.markdown) {

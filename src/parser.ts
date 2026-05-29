@@ -65,28 +65,39 @@ export async function parseSessionFrom(
 /**
  * Group assistant messages by requestId, merge content arrays, keep single usage.
  * Streaming chunks share a requestId but each reports the same usage — counting
- * all of them inflates tokens ~3x.
+ * all of them inflates tokens ~2-3x.
+ *
+ * Fallback: when a transcript omits `requestId` on assistant rows (older Claude
+ * Code versions, or partial logs), the streaming chunks still share `message.id`,
+ * so we group by `requestId ?? message.id`. Without this, those un-keyed rows pass
+ * straight through and re-introduce the very inflation this function exists to
+ * prevent. Rows with neither key still pass through unchanged.
  */
 function deduplicateAssistant(messages: SessionMessage[]): SessionMessage[] {
   const result: SessionMessage[] = [];
   const requestMap = new Map<string, SessionMessage>();
   const requestOrder: string[] = [];
 
+  const flush = () => {
+    for (const key of requestOrder) {
+      result.push(requestMap.get(key)!);
+    }
+    requestMap.clear();
+    requestOrder.length = 0;
+  };
+
   for (const msg of messages) {
-    if (msg.type !== 'assistant' || !msg.requestId) {
-      // Flush any pending request groups when we hit a non-assistant message
-      for (const reqId of requestOrder) {
-        result.push(requestMap.get(reqId)!);
-      }
-      requestMap.clear();
-      requestOrder.length = 0;
+    const key = msg.type === 'assistant' ? (msg.requestId ?? msg.message?.id) : undefined;
+    if (!key) {
+      // Non-assistant message, or an assistant row with no usable group key:
+      // flush any pending group (preserve ordering) and pass through as-is.
+      flush();
       result.push(msg);
       continue;
     }
 
-    const reqId = msg.requestId;
-    if (requestMap.has(reqId)) {
-      mergeAssistantChunk(requestMap.get(reqId)!, msg);
+    if (requestMap.has(key)) {
+      mergeAssistantChunk(requestMap.get(key)!, msg);
     } else {
       const clone: SessionMessage = {
         ...msg,
@@ -94,16 +105,12 @@ function deduplicateAssistant(messages: SessionMessage[]): SessionMessage[] {
           ? { ...msg.message, content: msg.message.content ? copyContent(msg.message.content) : undefined }
           : undefined,
       };
-      requestMap.set(reqId, clone);
-      requestOrder.push(reqId);
+      requestMap.set(key, clone);
+      requestOrder.push(key);
     }
   }
 
-  // Flush remaining
-  for (const reqId of requestOrder) {
-    result.push(requestMap.get(reqId)!);
-  }
-
+  flush();
   return result;
 }
 

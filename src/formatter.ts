@@ -162,6 +162,12 @@ export function formatSession(analysis: SessionAnalysis): string {
     const inBar = Math.round(inFrac * BAR_WIDTH);
     const outBar = BAR_WIDTH - inBar;
     lines.push(` Tokens  ${chalk.cyan('\u2588'.repeat(inBar))}${chalk.green('\u2588'.repeat(outBar))}  ${chalk.cyan(formatTokens(tokens.input + tokens.cacheRead + tokens.cacheCreation) + ' in')} ${chalk.green(formatTokens(tokens.output) + ' out')}`);
+    // Decompose "in": the headline is dominated by cheap cache reads. Show the
+    // freshly-billed input (input + cache writes) separately so the cost line
+    // is interpretable (a huge "in" at 97% cache is mostly $1.50/M reads, not
+    // $15/M fresh input).
+    const freshIn = tokens.input + tokens.cacheCreation;
+    lines.push(` Input   ${chalk.gray(formatTokens(freshIn) + ' new')} ${chalk.gray('\u00b7')} ${chalk.gray(formatTokens(tokens.cacheRead) + ' cached')}`);
   }
   const cachePct = Math.round(analysis.cacheHitRate * 100);
   lines.push(` Cache   ${renderCacheBar(analysis.cacheHitRate)}  ${cachePct}% hit`);
@@ -263,6 +269,8 @@ export function formatSessionLive(analysis: SessionAnalysis): string {
     const inBar = Math.round(inFrac * BAR_WIDTH);
     const outBar = BAR_WIDTH - inBar;
     lines.push(` Tokens  ${chalk.cyan('\u2588'.repeat(inBar))}${chalk.green('\u2588'.repeat(outBar))}  ${chalk.cyan(formatTokens(liveTok.input + liveTok.cacheRead + liveTok.cacheCreation) + ' in')} ${chalk.green(formatTokens(liveTok.output) + ' out')}`);
+    const liveFreshIn = liveTok.input + liveTok.cacheCreation;
+    lines.push(` Input   ${chalk.gray(formatTokens(liveFreshIn) + ' new')} ${chalk.gray('\u00b7')} ${chalk.gray(formatTokens(liveTok.cacheRead) + ' cached')}`);
   }
   const liveCachePct = Math.round(analysis.cacheHitRate * 100);
   lines.push(` Cache   ${renderCacheBar(analysis.cacheHitRate)}  ${liveCachePct}% hit`);

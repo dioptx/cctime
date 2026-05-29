@@ -86,6 +86,7 @@ export interface SessionMessage {
   parentUuid?: string | null;
   isSidechain?: boolean;
   message?: {
+    id?: string;
     role?: string;
     model?: string;
     usage?: TokenUsage;

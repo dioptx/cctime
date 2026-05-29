@@ -58,6 +58,36 @@ describe('parser: token deduplication', () => {
     expect(assistants).toHaveLength(2);
   });
 
+  it('should merge chunks that lack requestId by falling back to message.id', async () => {
+    // Some transcripts omit requestId on assistant rows; the streaming chunks
+    // still share message.id. Without the fallback these would NOT be merged and
+    // their (identical) usage would be summed downstream — the ~2-3x inflation.
+    setup();
+    const path = writeJsonl('dedup-no-reqid.jsonl', [
+      { type: 'user', timestamp: '2026-01-01T00:00:00Z', uuid: 'u1', message: { role: 'user', content: 'hello' } },
+      { type: 'assistant', timestamp: '2026-01-01T00:00:01Z', uuid: 'a1', message: { id: 'msg_1', role: 'assistant', model: 'claude-opus-4-6', usage: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 500, cache_creation_input_tokens: 0 }, content: [{ type: 'text', text: 'chunk1' }] } },
+      { type: 'assistant', timestamp: '2026-01-01T00:00:02Z', uuid: 'a2', message: { id: 'msg_1', role: 'assistant', model: 'claude-opus-4-6', usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 500, cache_creation_input_tokens: 0 }, content: [{ type: 'text', text: 'chunk2' }] } },
+      { type: 'assistant', timestamp: '2026-01-01T00:00:03Z', uuid: 'a3', message: { id: 'msg_1', role: 'assistant', model: 'claude-opus-4-6', usage: { input_tokens: 100, output_tokens: 80, cache_read_input_tokens: 500, cache_creation_input_tokens: 0 }, content: [{ type: 'tool_use', id: 'tu_1', name: 'Read' }] } },
+    ]);
+
+    const messages = await parseSession(path);
+    const assistants = messages.filter(m => m.type === 'assistant');
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].message?.usage?.output_tokens).toBe(80);
+  });
+
+  it('should NOT merge no-requestId assistants with different message.ids', async () => {
+    setup();
+    const path = writeJsonl('no-dedup-msgid.jsonl', [
+      { type: 'assistant', timestamp: '2026-01-01T00:00:01Z', uuid: 'a1', message: { id: 'msg_1', role: 'assistant', model: 'claude-opus-4-6', usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, content: [{ type: 'text', text: 'response 1' }] } },
+      { type: 'assistant', timestamp: '2026-01-01T00:00:03Z', uuid: 'a2', message: { id: 'msg_2', role: 'assistant', model: 'claude-opus-4-6', usage: { input_tokens: 200, output_tokens: 60, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, content: [{ type: 'text', text: 'response 2' }] } },
+    ]);
+
+    const messages = await parseSession(path);
+    const assistants = messages.filter(m => m.type === 'assistant');
+    expect(assistants).toHaveLength(2);
+  });
+
   it('should handle empty file', async () => {
     setup();
     const path = writeJsonl('empty.jsonl', []);

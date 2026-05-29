@@ -413,3 +413,19 @@ describe('formatter: insights', () => {
     expect(output).toContain('Warmup overhead');
   });
 });
+
+describe('formatSession: input decomposed into fresh vs cached', () => {
+  it('shows freshly-billed input (input + cache writes) and cache reads separately', () => {
+    // input 5K + cacheCreation 10K = 15K fresh; cacheRead 50K cached.
+    const output = strip(formatSession(makeAnalysis()));
+    expect(output).toContain('Input');
+    expect(output).toContain('15.0K new');
+    expect(output).toContain('50.0K cached');
+  });
+
+  it('the headline "in" remains the full context total (fresh + cached)', () => {
+    // input+cacheRead+cacheCreation = 65K — the line a user sees as scale.
+    const output = strip(formatSession(makeAnalysis()));
+    expect(output).toContain('65.0K in');
+  });
+});

@@ -24,8 +24,15 @@ features:
 
 ## Quick Start
 
+> **`@dioptx/cctime` is not yet published to npm.** Build from source:
+
 ```bash
-npx @dioptx/cctime
+git clone https://github.com/dioptx/cctime.git
+cd cctime
+npm install
+npm run build
+npm link
+cctime
 ```
 
 No configuration needed. cctime reads your local Claude Code session files automatically.

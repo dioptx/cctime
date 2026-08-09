@@ -2,6 +2,20 @@
 
 ## Install
 
+> **`@dioptx/cctime` is not yet published to npm.** Build from source until the package is available on the registry.
+
+```bash
+git clone https://github.com/dioptx/cctime.git
+cd cctime
+npm install
+npm run build
+npm link          # makes the `cctime` command available globally
+```
+
+To update later: `git pull && npm install && npm run build`.
+
+### From npm (once published)
+
 ```bash
 # Run directly (no install)
 npx @dioptx/cctime

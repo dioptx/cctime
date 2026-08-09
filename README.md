@@ -32,8 +32,15 @@ Know where your time (and money) goes. See if Claude is thinking, executing tool
 
 ## Quick Start
 
+> **`@dioptx/cctime` is not yet published to npm.** Build from source until the package is available on the registry (`npm view @dioptx/cctime` currently returns 404).
+
 ```bash
-npx @dioptx/cctime
+git clone https://github.com/dioptx/cctime.git
+cd cctime
+npm install
+npm run build
+npm link          # puts the `cctime` command on your PATH
+cctime            # analyzes your most recent Claude Code session
 ```
 
 No config needed. Reads your local Claude Code session files automatically.
@@ -50,6 +57,22 @@ No config needed. Reads your local Claude Code session files automatically.
 | **Export Formats** | CSV, Markdown, JSON, compact one-liner view |
 
 ## Install
+
+### From source
+
+`@dioptx/cctime` is not yet published to npm. Build from source:
+
+```bash
+git clone https://github.com/dioptx/cctime.git
+cd cctime
+npm install
+npm run build
+npm link          # makes the `cctime` command available globally
+```
+
+To update later: `git pull && npm install && npm run build`.
+
+### From npm (once published)
 
 ```bash
 # Run directly (no install needed)

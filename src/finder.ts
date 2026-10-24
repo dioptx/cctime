@@ -9,19 +9,36 @@ function getClaudeProjectsDir(): string {
   return join(homedir(), '.claude', 'projects');
 }
 
-function encodeProjectPath(projectPath: string): string {
-  return projectPath.replace(/\//g, '-');
+/**
+ * Encode a filesystem path the way Claude Code names its `~/.claude/projects`
+ * directories. Claude Code replaces every non-alphanumeric character with `-`
+ * (not just `/`), so `/Users/me/.config/app` becomes `-Users-me--config-app`.
+ * Only replacing `/` meant `--project` filtering silently matched nothing for
+ * any path containing a `.` or `_`.
+ */
+export function encodeProjectPath(projectPath: string): string {
+  return projectPath.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 const RELEVANT_TYPES = new Set(['assistant', 'user']);
 
+// The count is only used to weed out micro-sessions (filterMainSessions keeps
+// messageCount > 2), so we can stop as soon as we've seen enough to clear that
+// bar — no need to scan the whole file for busy sessions.
+const COUNT_STOP_AT = 3;
+
 /**
- * Count actual user+assistant messages in a JSONL file.
- * Reads only first few KB to keep it fast.
+ * Count user+assistant messages in a JSONL file.
+ *
+ * Streams the whole file rather than only the first 32KB: current Claude Code
+ * session files begin with a long run of `queue-operation` records before the
+ * first real message, so a 32KB cap counted zero user/assistant messages and
+ * filterMainSessions dropped every session. We early-exit once the count clears
+ * the filter threshold so busy sessions stay cheap.
  */
 export async function countJsonlMessages(filePath: string): Promise<number> {
   let count = 0;
-  const stream = createReadStream(filePath, { encoding: 'utf-8', end: 32_768 }); // read first 32KB
+  const stream = createReadStream(filePath, { encoding: 'utf-8' });
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
 
   for await (const line of rl) {
@@ -32,8 +49,11 @@ export async function countJsonlMessages(filePath: string): Promise<number> {
     } catch {
       // skip
     }
+    if (count >= COUNT_STOP_AT) break;
   }
 
+  rl.close();
+  stream.destroy();
   return count;
 }
 

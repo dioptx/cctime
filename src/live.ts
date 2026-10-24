@@ -3,6 +3,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseSession, parseSessionFrom } from './parser.js';
+import { encodeProjectPath } from './finder.js';
 import { analyzeSession } from './analyzer.js';
 import { formatSessionLive, formatAggregateLive } from './formatter.js';
 import type { SessionMessage, SessionAnalysis, SessionIndexEntry } from './types.js';
@@ -30,7 +31,7 @@ export async function findActiveSession(projectFilter?: string): Promise<ActiveS
   }
 
   if (projectFilter) {
-    const encoded = projectFilter.replace(/\//g, '-');
+    const encoded = encodeProjectPath(projectFilter);
     dirs = dirs.filter(d => d.endsWith(encoded));
   }
 

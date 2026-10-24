@@ -52,7 +52,9 @@ export async function parseSessionFrom(
       const obj = JSON.parse(line);
       lastCompleteOffset = currentOffset;
       if (!RELEVANT_TYPES.has(obj.type)) continue;
-      if (!obj.timestamp) continue;
+      // `summary` records carry the session title but no timestamp — don't drop them,
+      // or session titles always fall back to "Untitled session".
+      if (obj.type !== 'summary' && !obj.timestamp) continue;
       rawMessages.push(obj as SessionMessage);
     } catch {
       // Might be a partial line at EOF — don't advance lastCompleteOffset

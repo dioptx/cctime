@@ -3,6 +3,7 @@ import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseSession } from './parser.js';
+import { analyzeSession } from './analyzer.js';
 
 const TMP = join(tmpdir(), 'cctime-test-parser');
 
@@ -106,5 +107,36 @@ describe('parser: token deduplication', () => {
     ]);
     const messages = await parseSession(path);
     expect(messages).toHaveLength(1);
+  });
+
+  // unit — regression: `summary` records carry the session title but no
+  // timestamp. The timestamp guard used to drop them, so titles always fell
+  // back to "Untitled session". They must survive even without a timestamp.
+  it('should keep summary records even though they have no timestamp', async () => {
+    setup();
+    const path = writeJsonl('summary.jsonl', [
+      { type: 'summary', summary: 'Fix the parser bug', leafUuid: 'x1' },
+      { type: 'user', timestamp: '2026-01-01T00:00:00Z', uuid: 'u1', message: { role: 'user', content: 'hi' } },
+      { type: 'assistant', timestamp: '2026-01-01T00:00:01Z', uuid: 'a1', requestId: 'req_1', message: { role: 'assistant', model: 'claude-opus-4-6', usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, content: [{ type: 'text', text: 'hi' }] } },
+    ]);
+    const messages = await parseSession(path);
+    const summary = messages.find(m => m.type === 'summary');
+    expect(summary).toBeDefined();
+    expect(summary?.summary).toBe('Fix the parser bug');
+  });
+
+  // integration — end to end: a session file whose title lives in a summary
+  // record should surface that title, not "Untitled session".
+  it('should surface the session title from a summary record through analyzeSession', async () => {
+    setup();
+    const path = writeJsonl('titled.jsonl', [
+      { type: 'summary', summary: 'Refactor the finder module', leafUuid: 'x1' },
+      { type: 'user', timestamp: '2026-01-01T00:00:00Z', uuid: 'u1', message: { role: 'user', content: 'go' } },
+      { type: 'assistant', timestamp: '2026-01-01T00:00:01Z', uuid: 'a1', requestId: 'req_1', message: { role: 'assistant', model: 'claude-opus-4-6', usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, content: [{ type: 'text', text: 'ok' }] } },
+    ]);
+    const messages = await parseSession(path);
+    const analysis = analyzeSession('titled', messages);
+    expect(analysis.summary).toBe('Refactor the finder module');
+    expect(analysis.summary).not.toBe('Untitled session');
   });
 });
